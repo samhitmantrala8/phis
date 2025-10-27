@@ -1,3 +1,4 @@
+You said:
 import os
 import re
 import time
@@ -9,11 +10,12 @@ from flask_cors import CORS
 from google import genai
 from dotenv import load_dotenv, find_dotenv
 
+# Disable all logging globally
+logging.getLogger().setLevel(logging.CRITICAL)
+logging.disable(logging.CRITICAL)
+
 app = Flask(__name__)
 CORS(app)
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 _dotenv_path = find_dotenv()
 if _dotenv_path:
@@ -65,7 +67,6 @@ def _call_with_sdk_and_key(api_key: str, prompt: str) -> Optional[str]:
     return text.strip() if text else None
 
 def classify_with_key_rotation(input_text: str) -> Optional[int]:
-    logger.info("Generating prediction")
     prompt = (
         "Classify the following as phishing or safe. Reply with ONLY a single digit: "
         "'1' if phishing, '0' if safe. Do NOT include explanation or extra text.\n\n"
@@ -134,4 +135,10 @@ def predict_url_model():
 if __name__ == "__main__":
     KEYS = [k.strip() for k in KEYS if k and k.strip()]
     port = int(os.environ.get("PORT", 10000))
+    # Disable Flask startup messages
+    import warnings
+    warnings.filterwarnings("ignore")
+    cli = sys.modules.get("flask.cli")
+    if cli is not None:
+        cli.show_server_banner = lambda *x: None
     app.run(host="0.0.0.0", port=port, debug=False)
