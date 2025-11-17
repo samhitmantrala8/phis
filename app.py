@@ -12,49 +12,30 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, Text
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 
-# -------------------------------
-# Paths
-# -------------------------------
 SMISH_MODEL_DIR = "samhitmantrala/smish_fin"
 RF_MODEL_PATH = "random_forest.joblib"
 FEATURES_JSON = "feature_columns.json"
 CSV_PATH = "phishing_site_urls.csv"
 
-# -------------------------------
-# Flask app
-# -------------------------------
 app = Flask(__name__)
-CORS(app)  # Allow requests from frontend
+CORS(app)
 
-# -------------------------------
-# Load transformer model
-# -------------------------------
-print("Loading transformer model from Hugging Face...")
 tokenizer = AutoTokenizer.from_pretrained(SMISH_MODEL_DIR)
 transformer_model = AutoModelForSequenceClassification.from_pretrained(SMISH_MODEL_DIR)
 classifier = TextClassificationPipeline(model=transformer_model, tokenizer=tokenizer, top_k=None)
-print("Transformer model loaded successfully.")
 
-# -------------------------------
-# Load Random Forest model if exists
-# -------------------------------
 rf_model = None
 feature_columns = None
 
 if os.path.exists(RF_MODEL_PATH) and os.path.exists(FEATURES_JSON):
-    print("Loading Random Forest model and feature columns...")
     rf_model = joblib.load(RF_MODEL_PATH)
     with open(FEATURES_JSON, "r") as f:
         feature_columns = json.load(f)
-    print("Random Forest model loaded successfully.")
 
-# -------------------------------
-# URL feature helpers
-# -------------------------------
 def abnormal_url(URL):
     hostname = urlparse(URL).hostname
     hostname = str(hostname)
-    return 1 if re.search(hostname, URL) else 0
+    return 1 if hostname and re.search(hostname, URL) else 0
 
 def having_ip_address(URL: str) -> int:
     match = re.search(
@@ -88,65 +69,63 @@ def Shortining_Service(URL):
         r'tr\.im|link\.zip\.net', URL)
     return 1 if match else 0
 
-# -------------------------------
-# Routes
-# -------------------------------
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.route("/predict/sms", methods=["POST"])
+@app.route("/predict", methods=["POST"])
 def predict():
-    data = request.get_json(force=True, silent=True)
-    if not data or "text" not in data:
-        return jsonify({"error": "missing 'text' field"}), 400
-    text = data["text"]
-    try:
-        result = classifier(text)
-        if result:
-            top = result[0][0]
-            label = top["label"]
-            score = top["score"]
-            adjusted_score = score if label.upper() == "NEGATIVE" else 1 - score
-            return jsonify({"label": label, "adjusted_score": adjusted_score, "raw": result}), 200
-        return jsonify({"error": "empty result"}), 500
-    except Exception as e:
-        return jsonify({"error": "inference failure", "message": str(e)}), 500
-
-@app.route("/predict/url", methods=["POST"])
-def predict_sms():
     global rf_model, feature_columns
-    if rf_model is None:
-        return jsonify({"error": "Random Forest model not loaded. Train it first."}), 500
     data = request.get_json(force=True, silent=True)
-    if not data or "url" not in data:
-        return jsonify({"error": "missing 'url' field"}), 400
-    url = data["url"]
-    try:
-        numerical_values = {
-            'url_len': len(url),
-            'letters_count': letter_count(url),
-            'digits_count': digit_count(url),
-            'special_chars_count': sum_count_special_characters(url),
-            'shortened': Shortining_Service(url),
-            'abnormal': abnormal_url(url),
-            'secure_http': httpSecured(url),
-            'have_ip': having_ip_address(url),
-        }
-        X_input = np.array([numerical_values[feat] for feat in feature_columns]).reshape(1, -1)
-        pred_int = rf_model.predict(X_input)[0]
-        pred_label = "good" if pred_int == 1 else "bad"
-        return jsonify({"prediction": pred_label, "prediction_int": int(pred_int)}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if not data or "input" not in data:
+        return jsonify({"error": "missing 'input' field"}), 400
 
-@app.route("/train-sms", methods=["POST"])
-def train_sms():
+    text = data["input"]
+    dot_slash_score = text.count('.') + text.count('/')
+
+    is_url = dot_slash_score >= 3
+
+    if is_url:
+        if rf_model is None:
+            return jsonify({"error": "Random Forest model not loaded. Train it first."}), 500
+        url = text
+        try:
+            numerical_values = {
+                'url_len': len(url),
+                'letters_count': letter_count(url),
+                'digits_count': digit_count(url),
+                'special_chars_count': sum_count_special_characters(url),
+                'shortened': Shortining_Service(url),
+                'abnormal': abnormal_url(url),
+                'secure_http': httpSecured(url),
+                'have_ip': having_ip_address(url),
+            }
+            X_input = np.array([numerical_values[feat] for feat in feature_columns]).reshape(1, -1)
+            pred_int = rf_model.predict(X_input)[0]
+            pred_label = "good" if pred_int == 1 else "bad"
+            return jsonify({"type": "url", "prediction": pred_label, "prediction_int": int(pred_int)}), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    else:
+        try:
+            result = classifier(text)
+            if result:
+                top = result[0][0]
+                label = top["label"]
+                score = top["score"]
+                adjusted_score = score if label.upper() == "NEGATIVE" else 1 - score
+                return jsonify({"type": "sms", "label": label, "adjusted_score": adjusted_score, "raw": result}), 200
+            return jsonify({"error": "empty result"}), 500
+        except Exception as e:
+            return jsonify({"error": "inference failure", "message": str(e)}), 500
+
+@app.route("/train_url", methods=["POST"])
+def train_url():
     global rf_model, feature_columns
     logs = []
 
     def log(msg):
-        print(msg)
         logs.append(msg)
 
     if not os.path.exists(CSV_PATH):
@@ -184,7 +163,6 @@ def train_sms():
         rf_model = RandomForestClassifier(n_estimators=100, max_features='sqrt', random_state=42)
         rf_model.fit(X.values, y.values)
 
-        log("Saving model to disk...")
         joblib.dump(rf_model, RF_MODEL_PATH)
 
         log("Training complete.")
@@ -194,7 +172,5 @@ def train_sms():
         logs.append(str(e))
         return jsonify({"error": str(e), "logs": logs}), 500
 
-
-# -------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
